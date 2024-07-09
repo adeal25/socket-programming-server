@@ -40,7 +40,7 @@ namespace Server
                     {
                         var nak = "\x21";
                         clientSocket.Send(Encoding.ASCII.GetBytes(nak));
-                        Console.WriteLine("Invalid message received after SOH");
+                        Console.WriteLine($"Invalid message received :");
 
                         continue;
                     }
@@ -65,26 +65,32 @@ namespace Server
                         }
 
                         // Check if message ends with <ETX>
-                        if (finalMsgBuffer.Contains(0x03)) // ETX
-                        {
+                        
                             int stxIndex = finalMsgBuffer.IndexOf(0x02); // STX
+                            int etbIndex = finalMsgBuffer.IndexOf(0x23); // ETB
                             int etxIndex = finalMsgBuffer.IndexOf(0x03); // ETX
 
-                            if (stxIndex != -1 && etxIndex != -1 && etxIndex > stxIndex)
+                            if (stxIndex != -1 && (etbIndex != -1 || etxIndex != -1))
                             {
-                                byte[] fullMessageBytes = finalMsgBuffer.GetRange(stxIndex + 1, etxIndex - stxIndex - 1).ToArray();
-                                string finalMessage = Encoding.ASCII.GetString(fullMessageBytes);
+                                int endIndex = etbIndex != -1 ? etbIndex : etxIndex;
+                                byte[] chunkBytes = finalMsgBuffer.GetRange(stxIndex + 1, endIndex - stxIndex - 1).ToArray();
+                                string chunkMessage = Encoding.ASCII.GetString(chunkBytes);
 
-                                // Menampilkan data yang diterima sebagai string
-                                Console.WriteLine($"Socket server terima pesan: \"<STX>{finalMessage}<ETX>\"");
-
-                                // Simulasi pengiriman acknowledgment ke client
+                                if (etbIndex != -1)
+                                {
+                                    Console.WriteLine($"Socket server terima potongan: \"<STX>{chunkMessage}<ETB>\"");
+                                }
+                                else if (etxIndex != -1)
+                                {
+                                    Console.WriteLine($"Socket server terima potongan terakhir: \"<STX>{chunkMessage}<ETX>\"");
+                                }
+                                // Kirim <ACK> setelah kirim chunk
                                 clientSocket.Send(Encoding.ASCII.GetBytes(ackMessage));
                                 Console.WriteLine($"Socket server kirim acknowledgment akhir: \"{(ackMessage == "\x06" ? "<ACK>" : ackMessage)}\"");
 
-                                finalMsgBuffer.Clear(); // Clear buffer for next message
+                                finalMsgBuffer.RemoveRange(0, endIndex + 1); // Clear buffer for next message
                             }
-                        }
+                        
 
                         // Check if message contains <EOT>
                         if (finalMsgBuffer.Contains(0x04)) // EOT
