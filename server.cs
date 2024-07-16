@@ -14,10 +14,30 @@ namespace Server
 
         public static void ExecuteServer()
         {
-            IPHostEntry ipHost = Dns.GetHostEntry(Dns.GetHostName());
-            IPAddress ipAddr = ipHost.AddressList[0];
-            IPEndPoint localEndPoint = new IPEndPoint(ipAddr, 11111);
+            Console.Write("Masukkan IP Address server: ");
+            string ipAddressInput = Console.ReadLine();
+            IPAddress ipAddr;
+            // IPHostEntry ipHost = Dns.GetHostEntry(Dns.GetHostName());
+            // IPAddress ipAddr = ipHost.AddressList[0];
+            // IPEndPoint localEndPoint = new IPEndPoint(ipAddr, 11111);
+            if (!IPAddress.TryParse(ipAddressInput, out ipAddr))
+            {
+                Console.WriteLine("IP Address tidak valid");
+                return;
+            }
+            Console.Write("Masukkan port server: ");
+            string portInput = Console.ReadLine();
+            int port;
 
+            if (!int.TryParse(portInput, out port) || port <= 0 || port > 65535)
+            {
+                Console.WriteLine("Port tidak valid.");
+                return;
+    
+            }
+
+            IPEndPoint localEndPoint = new IPEndPoint(ipAddr, port);
+            
             Socket listener = new Socket(ipAddr.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
 
             try
