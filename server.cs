@@ -1,31 +1,35 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
 
 namespace Server
 {
     class Program
     {
+        private static Socket listener;
+        private static bool isListening;
+        private static Socket clientHandler;
+        private enum ServerState { SendingState, ReceiveState}
+        private static ServerState currentState = ServerState.SendingState;
         static void Main(string[] args)
         {
-            ExecuteServer();
+            StartServer();
         }
-
-        public static void ExecuteServer()
+        static void StartServer()
         {
-            Console.Write("Masukkan IP Address listen: ");
+            Console.Write("Masukkan IP Address listener: ");
             string ipAddressInput = Console.ReadLine();
             IPAddress ipAddr;
-            // IPHostEntry ipHost = Dns.GetHostEntry(Dns.GetHostName());
-            // IPAddress ipAddr = ipHost.AddressList[0];
-            // IPEndPoint localEndPoint = new IPEndPoint(ipAddr, 11111);
             if (!IPAddress.TryParse(ipAddressInput, out ipAddr))
             {
                 Console.WriteLine("IP Address tidak valid");
                 return;
             }
-            Console.Write("Masukkan port listen: ");
+
+            Console.Write("Masukkan port listener: ");
             string portInput = Console.ReadLine();
             int port;
 
@@ -33,186 +37,220 @@ namespace Server
             {
                 Console.WriteLine("Port tidak valid.");
                 return;
-    
             }
 
             IPEndPoint localEndPoint = new IPEndPoint(ipAddr, port);
-            
-            Socket listener = new Socket(ipAddr.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
 
             try
             {
+                // Initialize the listener socket
+                listener = new Socket(ipAddr.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+
                 listener.Bind(localEndPoint);
                 listener.Listen(10);
 
-                Console.WriteLine("Menunggu koneksi...");
-                Socket clientSocket = listener.Accept();
-                Console.WriteLine("Client terhubung.");
+                Console.WriteLine("Menunggu koneksi dari klien...");
+                isListening = true;
 
-                while (true)
+                while (isListening)
                 {
+                    clientHandler = listener.Accept();
+                    Console.WriteLine("Klien terhubung!");
                     try
                     {
-                        ServerSendMessage(clientSocket);
+                    Thread sendThread = new Thread(ServerSendMessage);
+                    Thread receiveThread = new Thread(ServerReceiveMessage);
 
-                        if (!ServerReceiveMessage(clientSocket))
-                        {
-                            break;
-                        }
-                    }
-                    catch (SocketException se)
-                    {
-                        Console.WriteLine($"SocketException: {se.Message}");
-                        break;
+                    sendThread.Start();
+                    receiveThread.Start();
+
+                    sendThread.Join();
+                    receiveThread.Join();
+
                     }
                     catch (Exception e)
                     {
-                        Console.WriteLine($"Exception: {e.Message}");
-                        break;
-                    }
+                        Console.WriteLine("Unexpected exception: {0}", e.ToString());
+                    }   
                 }
-
-                clientSocket.Shutdown(SocketShutdown.Both);
-                clientSocket.Close();
             }
             catch (Exception e)
             {
-                Console.WriteLine(e.ToString());
+                Console.WriteLine($"Unexpected exception: {e.Message}");
+                Thread.Sleep(2000);
+            }
+            finally
+            {
+                listener?.Close();
             }
         }
 
-        private static void ServerSendMessage(Socket clientSocket)
+        private static void ServerReceiveMessage()
         {
-            Console.Write("Masukkan pesan untuk dikirimkan ke client: ");
-            string userMessage = Console.ReadLine();
-
-            if (userMessage.ToLower() == "exit")
+            AutoResetEvent canReceive = new AutoResetEvent(true);
+            try
             {
-                return;
+                while (true)
+                {
+                    if (currentState != ServerState.ReceiveState)
+                    {
+                        Thread.Sleep(100);
+                        continue;
+                    }
+
+                    canReceive.WaitOne();
+                
+                    byte[] sohBuffer = new byte[1];
+                    int bytesRec = clientHandler.Receive(sohBuffer);
+                    if (bytesRec == 0 || sohBuffer[0] != 0x01)
+                    {
+                        Console.WriteLine("SOH yang diterima dari klien tidak valid");
+                        return;
+                    }
+
+                    var ackMessage = "\x06";
+                    clientHandler.Send(Encoding.ASCII.GetBytes(ackMessage));
+                    Console.WriteLine($"Socket server kirim ACK: \"{(ackMessage == "\x06" ? "<ACK>" : ackMessage)}\"");
+
+                    List<byte> finalMsgBuff = new List<byte>();
+                    while (true)
+                    {
+                        byte[] messageBuffer = new byte[1024];
+                        int byteReceived = clientHandler.Receive(messageBuffer);
+                        if (byteReceived == 0) break;
+
+                        for (int i = 0; i < byteReceived; i++)
+                        {
+                            finalMsgBuff.Add(messageBuffer[i]);
+                        }
+
+                        int stxIdk = finalMsgBuff.IndexOf(0x02);
+                        int etbIdk = finalMsgBuff.IndexOf(0x23);
+                        int etxIdk = finalMsgBuff.IndexOf(0x03);
+
+                        if (stxIdk != -1 && (etbIdk != -1 || etxIdk != -1))
+                        {
+                            int endIdk = etbIdk != -1 ? etbIdk : etxIdk;
+                            byte[] chunkBytes = finalMsgBuff.GetRange(stxIdk + 1, endIdk - stxIdk - 1).ToArray();
+                            string chunkMessage = Encoding.ASCII.GetString(chunkBytes);
+
+                            if (etbIdk != -1)
+                            {
+                                Console.WriteLine($"Socket server terima potongan: \"<STX>{chunkMessage}<ETB>\"");
+                            }
+                            else if (etxIdk != -1)
+                            {
+                                Console.WriteLine($"Socket server terima potongan terakhir \"<STX>{chunkMessage}<ETX>\"");
+                            }
+
+                            clientHandler.Send(Encoding.ASCII.GetBytes(ackMessage));
+                            Console.WriteLine($"Socket server kirim ACK: \"{(ackMessage == "\x06" ? "<ACK>" : ackMessage)}\"");
+
+                            finalMsgBuff.RemoveRange(0, endIdk + 1);
+                        }
+
+                        if (finalMsgBuff.Contains(0x04))
+                        {
+                            Console.WriteLine("Akhir penerimaan transmisi dari klien.");
+                            finalMsgBuff.Clear();
+                            break;
+                        }                
+                    }
+                    // currentState = ServerState.SendingState;
+                    canReceive.Set();
+                }
             }
-
-            var soh = "\x01";
-            var ack = "\x06";
-            var stx = "\x02";
-            var etb = "\x23";
-            var etx = "\x03";
-            var eot = "\x04";
-            
-
-            // Send <SOH>
-            clientSocket.Send(Encoding.ASCII.GetBytes(soh));
-            Console.WriteLine($"Socket server kirim: \"{(soh == "\x01" ? "<SOH>" : soh)}\"");
-
-            // Wait for <ACK>
-            byte[] ackBuffer = new byte[1];
-            clientSocket.Receive(ackBuffer);
-
-            if (ackBuffer[0] != 0x06)
+            catch (Exception e)
             {
-                Console.WriteLine("Gagal menerima SCK setelah SOH ");
-                return;
+                Console.WriteLine($"Exception: {e.Message}");
             }
-            else
+            finally
             {
-                Console.WriteLine("Socket server terima ACK");
+                clientHandler?.Shutdown(SocketShutdown.Both);
+                clientHandler?.Close();
             }
+        }
 
-            // Send message in chunks
-            byte[] messageBuffer = Encoding.ASCII.GetBytes(userMessage);
-            int bufferSize = 255;
+        private static void ServerSendMessage()
+        {
+            AutoResetEvent canSend = new AutoResetEvent(true);
+            if (clientHandler == null) return;
 
-            for (int i = 0; i < messageBuffer.Length; i += bufferSize)
+            while (true)
             {
-                bool isLastChunk = i + bufferSize >= messageBuffer.Length;
-                int chunkSize = isLastChunk ? messageBuffer.Length - i : bufferSize;
-                byte[] chunkBuffer = new byte[chunkSize];
-                Array.Copy(messageBuffer, i, chunkBuffer, 0, chunkSize);
+                if (currentState != ServerState.SendingState)
+                {
+                    Thread.Sleep(100);
+                    continue;
+                }
+                canSend.WaitOne();
 
-                string chunkMessage = stx + Encoding.ASCII.GetString(chunkBuffer) + (isLastChunk ? etx : etb);
-                byte[] messageToSend = Encoding.ASCII.GetBytes(chunkMessage);
-                Console.WriteLine($"Socket server kirim pesan: \"{(stx == "\x02" ? "<STX>" : stx)}{Encoding.ASCII.GetString(chunkBuffer)}{(isLastChunk ? "<ETX>" : "<ETB>")}\"");
+                Console.Write("Masukkan pesan untuk dikirimkan ke klien: ");
+                string serverMessage = Console.ReadLine();
 
-                clientSocket.Send(messageToSend);
+                if (serverMessage.ToLower() == "exit")
+                {
+                    isListening = false;
+                    listener.Close();
+                    return;
+                }
 
-                // Wait for <ACK>
-                clientSocket.Receive(ackBuffer);
+                var soh = "\x01";
+                var stx = "\x02";
+                var etb = "\x23";
+                var etx = "\x03";
+                var eot = "\x04";
+
+                clientHandler.Send(Encoding.ASCII.GetBytes(soh));
+                Console.WriteLine($"Socket server kirim: \"{(soh == "\x01" ? "<SOH>" : soh)}\"");
+
+                byte[] ackBuffer = new byte[1];
+                clientHandler.Receive(ackBuffer);
 
                 if (ackBuffer[0] != 0x06)
                 {
-                    Console.WriteLine($"Gagal menerima ACK setelah mengirimkan potongan, mulai dari byte ke {i}");
+                    Console.WriteLine("Gagal menerima ACK setelah SOH");
                     return;
                 }
                 else
                 {
                     Console.WriteLine("Socket server terima ACK");
                 }
-            }
 
-            // Send <EOT>
-            clientSocket.Send(Encoding.ASCII.GetBytes(eot));
-            Console.WriteLine($"Socket server kirim: \"{(eot == "\x04" ? "<EOT>" : eot)}\"");
-        }
+                byte[] messageBuffer = Encoding.ASCII.GetBytes(serverMessage);
+                int bufferSize = 255;
 
-        private static bool ServerReceiveMessage(Socket clientSocket)
-        {
-            Console.WriteLine("Menunggu untuk menerima pesan dari clinet...");
-
-            byte[] sohBuffer = new byte[1];
-            clientSocket.Receive(sohBuffer);
-            if (sohBuffer[0] != 0x01)
-            {
-                Console.WriteLine("SOH yang diterima dari client tidak valid.");
-                return false;
-            }
-
-            var ackMessage = "\x06";
-            clientSocket.Send(Encoding.ASCII.GetBytes(ackMessage));
-            Console.WriteLine($"Socket server kirim ACK: \"{(ackMessage == "\x06" ? "<ACK>" : ackMessage)}");
-
-            List<byte> finalMsgBuff = new List<byte>();
-            while (true)
-            {
-                byte[] messageBuffer = new byte[1024];
-                int byteReceived = clientSocket.Receive(messageBuffer);
-                for (int i = 0; i < byteReceived; i++)
+                for (int i = 0; i < messageBuffer.Length; i += bufferSize)
                 {
-                    finalMsgBuff.Add(messageBuffer[i]);
-                }
+                    bool isLastChunk = i + bufferSize >= messageBuffer.Length;
+                    int chunkSize = isLastChunk ? messageBuffer.Length - i : bufferSize;
+                    byte[] chunkBuffer = new byte[chunkSize];
+                    Array.Copy(messageBuffer, i, chunkBuffer, 0, chunkSize);
 
-                int stxIdk = finalMsgBuff.IndexOf(0x02);
-                int etbIdk = finalMsgBuff.IndexOf(0x23);
-                int etxIdk = finalMsgBuff.IndexOf(0x03);
+                    string chunkMessage = stx + Encoding.ASCII.GetString(chunkBuffer) + (isLastChunk ? etx : etb);
+                    byte[] messageToSend = Encoding.ASCII.GetBytes(chunkMessage);
+                    Console.WriteLine($"Socket server kirim pesan: \"{(stx == "\x02" ? "<STX>" : stx)}{Encoding.ASCII.GetString(chunkBuffer)}{(isLastChunk ? "<ETX>" : "<ETB>")}\"");
 
-                if (stxIdk != -1 && (etbIdk != -1 || etxIdk != -1))
-                {
-                    int endIdk = etbIdk != -1 ? etbIdk : etxIdk;
-                    byte[] chunkBytes = finalMsgBuff.GetRange(stxIdk + 1, endIdk - stxIdk - 1).ToArray();
-                    string chunkMessage = Encoding.ASCII.GetString(chunkBytes);
+                    clientHandler.Send(messageToSend);
 
-                    if (etbIdk != -1)
+                    clientHandler.Receive(ackBuffer);
+
+                    if (ackBuffer[0] != 0x06)
                     {
-                        Console.WriteLine($"Socket server terima potongan: \"<STX>{chunkMessage}<ETB>\"");
+                        Console.WriteLine($"Gagal menerima ACK setelah mengirim chunk dimulai dari byte {i}");
+                        return;
                     }
-                    else if (etxIdk != -1)
+                    else
                     {
-                        Console.WriteLine($"Socket server terima potongan terakhir \"<STX>{chunkMessage}<ETX>\"");
+                        Console.WriteLine("Socket server terima ACK");
                     }
-
-                    clientSocket.Send(Encoding.ASCII.GetBytes(ackMessage));
-                    Console.WriteLine($"Socket server kirim acknowledgment akhir: \"{(ackMessage == "\x06" ? "<ACK>" : ackMessage)}\"");
-
-                    finalMsgBuff.RemoveRange(0, endIdk + 1); // Clear buffer untuk menerima message selanjutnya
                 }
 
-                if (finalMsgBuff.Contains(0x04))
-                {
-                    Console.WriteLine("Akhir penerimaan transmisi dari client.");
-                    finalMsgBuff.Clear();
-                    break;
-                }
-
+                clientHandler.Send(Encoding.ASCII.GetBytes(eot));
+                Console.WriteLine($"Socket server kirim: \"{(eot == "\x04" ? "<EOT>" : eot)}\"");
+                // currentState = ServerState.ReceiveState;
+                canSend.Set();
             }
-            return true;
         }
     }
 }
