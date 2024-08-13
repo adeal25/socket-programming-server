@@ -87,7 +87,7 @@ namespace Server
 
         private static void ServerReceiveMessage()
         {
-            AutoResetEvent canReceive = new AutoResetEvent(true);
+            // AutoResetEvent canReceive = new AutoResetEvent(true);
             try
             {
                 while (true)
@@ -98,7 +98,7 @@ namespace Server
                         continue;
                     }
 
-                    canReceive.WaitOne();
+                    // canReceive.WaitOne();
                 
                     byte[] sohBuffer = new byte[1];
                     int bytesRec = clientHandler.Receive(sohBuffer);
@@ -157,7 +157,7 @@ namespace Server
                         }                
                     }
                     // currentState = ServerState.SendingState;
-                    canReceive.Set();
+                    // canReceive.Set();
                 }
             }
             catch (Exception e)
@@ -173,20 +173,18 @@ namespace Server
 
         private static void ServerSendMessage()
         {
-            AutoResetEvent canSend = new AutoResetEvent(true);
+            // AutoResetEvent canSend = new AutoResetEvent(true);
             if (clientHandler == null) return;
 
             while (true)
             {
-                if (currentState != ServerState.SendingState)
-                {
-                    Thread.Sleep(100);
-                    continue;
-                }
-                canSend.WaitOne();
+                if (currentState != ServerState.SendingState) continue;
+                
+                // canSend.WaitOne();
 
-                Console.Write("Masukkan pesan untuk dikirimkan ke klien: ");
-                string serverMessage = Console.ReadLine();
+                // Console.Write("Masukkan pesan untuk dikirimkan ke klien: ");
+                // string serverMessage = Console.ReadLine();
+                string serverMessage = "Halo, Client!";
 
                 if (serverMessage.ToLower() == "exit")
                 {
@@ -248,8 +246,8 @@ namespace Server
 
                 clientHandler.Send(Encoding.ASCII.GetBytes(eot));
                 Console.WriteLine($"Socket server kirim: \"{(eot == "\x04" ? "<EOT>" : eot)}\"");
-                // currentState = ServerState.ReceiveState;
-                canSend.Set();
+                currentState = ServerState.ReceiveState;
+                // canSend.Set();
             }
         }
     }
