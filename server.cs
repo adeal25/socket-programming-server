@@ -11,13 +11,17 @@ namespace Server
     {
         private static Socket listener;
         private static bool isListening;
+        private static bool isRunning = true;
         private static Socket clientHandler;
-        private enum ServerState { SendingState, ReceiveState}
-        private static ServerState currentState = ServerState.SendingState;
+        private enum ServerState { Sending, Receiving}
+        private static ServerState currentState = ServerState.Receiving;
+        private static EventWaitHandle sendHandle = new AutoResetEvent(true);
+        private static EventWaitHandle receiveHandle = new AutoResetEvent(true);
         static void Main(string[] args)
         {
             StartServer();
         }
+        
         static void StartServer()
         {
             Console.Write("Masukkan IP Address listener: ");
@@ -58,14 +62,14 @@ namespace Server
                     Console.WriteLine("Klien terhubung!");
                     try
                     {
-                    Thread sendThread = new Thread(ServerSendMessage);
-                    Thread receiveThread = new Thread(ServerReceiveMessage);
+                    Thread thInputUser = new Thread(ServerSendMessage);
+                    Thread thMainSocket = new Thread(ServerReceiveMessage);
 
-                    sendThread.Start();
-                    receiveThread.Start();
+                    thInputUser.Start();
+                    thMainSocket.Start();
 
-                    sendThread.Join();
-                    receiveThread.Join();
+                    thInputUser.Join();
+                    thMainSocket.Join();
 
                     }
                     catch (Exception e)
@@ -87,30 +91,32 @@ namespace Server
 
         private static void ServerReceiveMessage()
         {
-            // AutoResetEvent canReceive = new AutoResetEvent(true);
+            if (clientHandler == null) return;
             try
             {
-                while (true)
+                while (isRunning)
                 {
-                    if (currentState != ServerState.ReceiveState)
+                    if (currentState != ServerState.Receiving)
                     {
                         Thread.Sleep(100);
                         continue;
                     }
-
-                    // canReceive.WaitOne();
+                    receiveHandle.WaitOne();
                 
                     byte[] sohBuffer = new byte[1];
                     int bytesRec = clientHandler.Receive(sohBuffer);
                     if (bytesRec == 0 || sohBuffer[0] != 0x01)
                     {
                         Console.WriteLine("SOH yang diterima dari klien tidak valid");
-                        return;
+                        continue;
                     }
+
 
                     var ackMessage = "\x06";
                     clientHandler.Send(Encoding.ASCII.GetBytes(ackMessage));
                     Console.WriteLine($"Socket server kirim ACK: \"{(ackMessage == "\x06" ? "<ACK>" : ackMessage)}\"");
+                    
+                    // signal the sending thread that ACK was received
 
                     List<byte> finalMsgBuff = new List<byte>();
                     while (true)
@@ -156,8 +162,8 @@ namespace Server
                             break;
                         }                
                     }
-                    // currentState = ServerState.SendingState;
-                    // canReceive.Set();
+                    currentState = ServerState.Sending;
+                    sendHandle.Set();
                 }
             }
             catch (Exception e)
@@ -169,6 +175,7 @@ namespace Server
                 clientHandler?.Shutdown(SocketShutdown.Both);
                 clientHandler?.Close();
             }
+            
         }
 
         private static void ServerSendMessage()
@@ -176,12 +183,13 @@ namespace Server
             // AutoResetEvent canSend = new AutoResetEvent(true);
             if (clientHandler == null) return;
 
-            while (true)
+            while (isRunning)
             {
-                if (currentState != ServerState.SendingState) continue;
+                if (currentState != ServerState.Sending) continue;
                 
                 // canSend.WaitOne();
 
+                sendHandle.WaitOne();
                 // Console.Write("Masukkan pesan untuk dikirimkan ke klien: ");
                 // string serverMessage = Console.ReadLine();
                 string serverMessage = "Halo, Client!";
@@ -190,6 +198,7 @@ namespace Server
                 {
                     isListening = false;
                     listener.Close();
+                    isRunning = false;
                     return;
                 }
 
@@ -214,6 +223,7 @@ namespace Server
                 {
                     Console.WriteLine("Socket server terima ACK");
                 }
+                // receiveHandle.Set();
 
                 byte[] messageBuffer = Encoding.ASCII.GetBytes(serverMessage);
                 int bufferSize = 255;
@@ -246,8 +256,8 @@ namespace Server
 
                 clientHandler.Send(Encoding.ASCII.GetBytes(eot));
                 Console.WriteLine($"Socket server kirim: \"{(eot == "\x04" ? "<EOT>" : eot)}\"");
-                currentState = ServerState.ReceiveState;
-                // canSend.Set();
+                currentState = ServerState.Receiving;
+                receiveHandle.Set();
             }
         }
     }
