@@ -117,7 +117,7 @@ namespace Server
                             if (receiveBuffer[i] == 0x01)
                             {
                                 Console.WriteLine("SOH diterima");
-                                receiveHandle.Set();
+                                // receiveHandle.Set();
                                 clientHandler.Send(new byte[] {0x06});
                                 Console.WriteLine("Socket server kirim ACK");
 
