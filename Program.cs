@@ -133,15 +133,40 @@ namespace Server
                                     }
             
                                     int stxIdk = finalMsgBuff.IndexOf(0x02);
-                                    int etbIdk = finalMsgBuff.IndexOf(0x23);
-                                    int etxIdk = finalMsgBuff.IndexOf(0x03);
+                                    int etbIdk = finalMsgBuff.LastIndexOf(0x23);
+                                    int etxIdk = finalMsgBuff.LastIndexOf(0x03);
             
                                     if (stxIdk != -1 && (etbIdk != -1 || etxIdk != -1))
                                     {
                                         int endIdk = etbIdk != -1 ? etbIdk : etxIdk;
-                                        byte[] chunkBytes = finalMsgBuff.GetRange(stxIdk + 1, endIdk - stxIdk - 1).ToArray();
+
+                                        if (endIdk > stxIdk)
+                                        {
+                                            while (finalMsgBuff.LastIndexOf(0x03) > stxIdk && finalMsgBuff.LastIndexOf(0x03) > endIdk)
+                                            {
+                                                endIdk = finalMsgBuff.LastIndexOf(0x03);
+                                            }
+                                        }
+                                        int chunkLength = endIdk - stxIdk - 1;
+
+                                        byte[] chunkBytes = finalMsgBuff.GetRange(stxIdk + 1, chunkLength - 3).ToArray();
                                         string chunkMessage = Encoding.ASCII.GetString(chunkBytes);
-            
+
+                                        byte cs1Byte = finalMsgBuff[endIdk - 2];
+                                        byte cs2Byte = finalMsgBuff[endIdk - 1];
+                                        string receivedCs1 =  cs1Byte.ToString("X2")[1].ToString();
+                                        string receivedCs2 =  cs2Byte.ToString("X2")[1].ToString();
+                                        // Console.WriteLine($"Checksum diterima: CS1 = {receivedCs1}, CS2 = {receivedCs2}");
+
+                                        if (ValidateChecksum(chunkBytes, receivedCs1, receivedCs2))
+                                        {
+                                            Console.WriteLine("Checksum Cocok");
+                                        }
+                                        else
+                                        {
+                                            Console.WriteLine("Checksum tidak valid");
+                                        }
+
                                         if (etbIdk != -1)
                                         {
                                             Console.WriteLine($"Socket client terima potongan pesan: \"<STX>{chunkMessage}<ETB>\"");
@@ -222,18 +247,22 @@ namespace Server
                     Array.Copy(messageBuffer, i, chunkBuffer, 0, chunkSize);
 
                     string chunkMessage = Encoding.ASCII.GetString(chunkBuffer);
-                    byte[] messageToSend = Encoding.ASCII.GetBytes($"\x02{chunkMessage}{(isLastChunk? "\x03" : "\x23")}");
-                    Console.WriteLine($"Socket server kirim pesan: <STX>{chunkMessage}{(isLastChunk ? "<ETX>" : "<ETB>")}");
+
+                    string checksumValues = Checksum(chunkBuffer);
+                    // Console.WriteLine(checksumValues);
+                    byte cs1 = Convert.ToByte(checksumValues[0].ToString(), 16);
+                    byte cs2 = Convert.ToByte(checksumValues[1].ToString(), 16);
+                    
+                    byte[] messageToSend = Encoding.ASCII.GetBytes($"\x02{chunkMessage}\x0D");
+                    messageToSend = AppendBytes(messageToSend, new byte[] { cs1, cs2 });
+                    messageToSend = AppendBytes(messageToSend, new byte[] { isLastChunk? (byte)0x03 : (byte)0x23 });
+                    Console.WriteLine($"Socket server kirim pesan: <STX>{chunkMessage}<CR>{cs1}{cs2}{(isLastChunk ? "<ETX>" : "<ETB>")}");
 
                     clientHandler.Send(messageToSend);
 
                     // kodingan untuk send ackBuffer
+
                     sendHandle.WaitOne();
-
-                    // clientHandler.Send(Encoding.ASCII.GetBytes(ackMessage));
-                    // Console.WriteLine($"Socket server kirim: \"{(ackMessage == "\x06" ? "<ACK>" : ackMessage)}\"");
-                    // =============
-
                 }
 
                 clientHandler.Send(new byte[] { 0x04 });
@@ -244,5 +273,42 @@ namespace Server
             
             }
         }
+        private static byte[] AppendBytes(byte[] original, byte[] toAppend)
+        {
+            byte[] result = new byte[original.Length + toAppend.Length];
+            Array.Copy(original, result, original.Length);
+            Array.Copy(toAppend, 0, result, original.Length, toAppend.Length);
+            return result;
+        }
+        
+
+        private static string Checksum(byte[] message)
+        {
+            int checksum = 0;
+
+            foreach (byte b in message)
+            {
+                checksum += b;
+            }
+
+            checksum = checksum % 256;
+
+            return checksum.ToString("X2");
+        }
+
+        private static bool ValidateChecksum(byte[] chunkBytes, string receivedCs1, string receivedCs2)
+        {
+            // Now that the Checksum method returns a single string instead of an array, you need to modify this method accordingly.
+            string calculatedChecksum = Checksum(chunkBytes);
+            
+            // Log the received and calculated checksums for debugging.
+            Console.WriteLine($"Received: {receivedCs1}{receivedCs2}, Calculated: {calculatedChecksum}");
+
+            // Compare the entire checksum strings instead of splitting them.
+            return calculatedChecksum == $"{receivedCs1}{receivedCs2}";
+        }
+
+ 
+
     }
 }
